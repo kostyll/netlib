@@ -351,11 +351,9 @@ class HTTP2Protocol(semantics.ProtocolMixin):
             for frm in frms:
                 print(frm.human_readable(">>"))
 
-        return [frm.to_bytes() for frm in frms]
+        return frms
 
-    def _create_body(self, body, stream_id):
-        if body is None or len(body) == 0:
-            return b''
+    def _create_body(self, body, stream_id, end_stream=True):
 
         chunk_size = self.http2_settings[frame.SettingsFrame.SETTINGS.SETTINGS_MAX_FRAME_SIZE]
         chunks = range(0, len(body), chunk_size)
@@ -364,13 +362,14 @@ class HTTP2Protocol(semantics.ProtocolMixin):
             flags=frame.Frame.FLAG_NO_FLAGS,
             stream_id=stream_id,
             payload=body[i:i+chunk_size]) for i in chunks]
-        frms[-1].flags = frame.Frame.FLAG_END_STREAM
+        if end_stream:
+            frms[-1].flags = frame.Frame.FLAG_END_STREAM
 
         if self.dump_frames:  # pragma no cover
             for frm in frms:
                 print(frm.human_readable(">>"))
 
-        return [frm.to_bytes() for frm in frms]
+        return frms
 
     def _receive_transmission(self, stream_id=None, include_body=True):
         if not include_body:
