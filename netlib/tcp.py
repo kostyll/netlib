@@ -8,6 +8,7 @@ import time
 import traceback
 
 import certifi
+import six
 import OpenSSL
 from OpenSSL import SSL
 
@@ -190,7 +191,7 @@ class Writer(_FileLike):
                     self.add_log(v[:r])
                     return r
             except (SSL.Error, socket.error) as e:
-                raise NetLibDisconnect(str(e))
+                six.reraise(NetLibDisconnect, NetLibDisconnect(str(e)), sys.exc_info()[2])
 
 
 class Reader(_FileLike):
@@ -439,6 +440,9 @@ class _Connection(object):
 
         self.ssl_established = False
         self.finished = False
+
+    def fileno(self):
+        return self.connection.fileno()
 
     def get_current_cipher(self):
         if not self.ssl_established:

@@ -356,7 +356,7 @@ class HTTP2Protocol(semantics.ProtocolMixin):
     def _create_body(self, body, stream_id, end_stream=True):
 
         chunk_size = self.http2_settings[frame.SettingsFrame.SETTINGS.SETTINGS_MAX_FRAME_SIZE]
-        chunks = range(0, len(body), chunk_size)
+        chunks = range(0, len(body), chunk_size) or [0]
         frms = [frame.DataFrame(
             state=self,
             flags=frame.Frame.FLAG_NO_FLAGS,
