@@ -37,8 +37,7 @@ class Http2Connection(object):
         with self.lock:
             for frame in frames:
                 print("send frame", self.__class__.__name__, repr(frame))
-                # TODO: Remove once we decided which frames to use.
-                d = frame.to_bytes() if hasattr(frame, "to_bytes") else frame.serialize()
+                d = frame.to_bytes()
                 self._connection.wfile.write(d)
                 self._connection.wfile.flush()
 
@@ -49,46 +48,22 @@ class Http2Connection(object):
         with self.lock:
             if stream_id is None:
                 stream_id = self._next_stream_id()
-            frames = self._make_header_frames(headers, stream_id)
-            if end_stream:
-                frames[-1].flags |= Frame.FLAG_END_STREAM
+            raw_headers = self.encoder.encode(headers.fields)
+            frames = _make_header_frames(raw_headers, stream_id, self.max_frame_size, end_stream)
             self.send_frame(*frames)
             return stream_id
 
-    def _make_header_frames(self, headers, stream_id):
-        frame_cls = itertools.chain((HeadersFrame,), itertools.cycle((ContinuationFrame,)))
-        raw_headers = self.encoder.encode(headers.fields)
-
-        # TODO: We can combine _make_header_frames and _make_data_frames into a
-        # `split_into_frames` method if they would have a common way of setting the data/content.
-        frames = []
-        for i in range(0, len(raw_headers), self.max_frame_size):
-            frame = next(frame_cls)(stream_id=stream_id)
-            frame.header_block_fragment = raw_headers[i:i+self.max_frame_size]
-            frames.append(frame)
-        frames[-1].flags = Frame.FLAG_END_HEADERS
-        return frames
-
     def send_data(self, data, stream_id, end_stream=False):
-        frames = self._make_data_frames(data, stream_id)
-        if end_stream:
-            frames[-1].flags |= Frame.FLAG_END_STREAM
+        frames = _make_data_frames(data, stream_id, self.max_frame_size, end_stream)
         for frame in frames:
             self.send_frame(frame)
-
-    def _make_data_frames(self, data, stream_id):
-        frames = []
-        for i in range(0, len(data), self.max_frame_size):
-            frame = DataFrame(stream_id=stream_id)
-            frame.payload = data[i:i + self.max_frame_size]
-            frames.append(frame)
-        return frames
 
     def read_headers(self, headers_frame):
         all_header_frames = self._read_all_header_frames(headers_frame)
         header_block_fragment = b"".join(frame.header_block_fragment for frame in all_header_frames)
+        decoded = self.decoder.decode(header_block_fragment)
         headers = Headers(
-            [[str(k), str(v)] for k, v in self.decoder.decode(header_block_fragment)]
+            [[str(k).encode(), str(v).encode()] for k, v in decoded]
         )
         return all_header_frames, headers
 
@@ -97,8 +72,7 @@ class Http2Connection(object):
         while not frames[-1].flags & Frame.FLAG_END_HEADERS:
             # This blocks the whole connection if the client does not send header frames,
             # but that should not matter in practice.
-            with self.lock:
-                frame = self.read_frame()
+            frame = self.read_frame()
 
             if not isinstance(frame, ContinuationFrame) or frame.stream_id != frames[-1].stream_id:
                 raise Http2Exception("Unexpected frame: %s" % repr(frame))
@@ -177,19 +151,46 @@ class Http2ServerConnection(Http2Connection):
         return self.initiated_streams * 2 + 1
 
 
+def _make_header_frames(raw_headers, stream_id, max_frame_size, end_stream):
+    frame_cls = itertools.chain((HeadersFrame,), itertools.cycle((ContinuationFrame,)))
+
+    # TODO: We can combine _make_header_frames and _make_data_frames into a
+    # `split_into_frames` method if they would have a common way of setting the data/content.
+    frames = []
+    for i in range(0, len(raw_headers), max_frame_size):
+        frame = next(frame_cls)(stream_id=stream_id)
+        frame.header_block_fragment = raw_headers[i:i + max_frame_size]
+        frames.append(frame)
+    frames[-1].flags = Frame.FLAG_END_HEADERS
+    if end_stream:
+        frames[-1].flags |= Frame.FLAG_END_STREAM
+    return frames
+
+
+def _make_data_frames(data, stream_id, max_frame_size, end_stream):
+    frames = []
+    frame_offsets = range(0, len(data), max_frame_size) or [0]
+    for i in frame_offsets:
+        frame = DataFrame(stream_id=stream_id)
+        frame.payload = data[i:i + max_frame_size]
+        frames.append(frame)
+    if end_stream:
+        frames[-1].flags |= Frame.FLAG_END_STREAM
+    return frames
+
+
 def make_request(headers, body, timestamp_start, timestamp_end):
     # All HTTP/2 requests MUST include exactly one valid value for the :method, :scheme, and
     # :path pseudo-header fields, unless it is a CONNECT request
     try:
-        # TODO: Possibly .pop()?
-        method = headers[':method']
-        if method == "CONNECT":
+        method = headers.pop(':method')
+        if method == b"CONNECT":
             raise NotImplementedError("HTTP2 CONNECT not supported")
         else:
             host = None
             port = None
-        scheme = headers[':scheme']
-        path = headers[':path']
+        scheme = headers.pop(':scheme')
+        path = headers.pop(':path')
     except KeyError:
         raise Http2Exception("Malformed HTTP2 request headers")
 
@@ -204,9 +205,8 @@ def make_request(headers, body, timestamp_start, timestamp_end):
 def make_response(headers, body, timestamp_start, timestamp_end):
     # All HTTP/2 responses MUST include exactly one valid value for the :status
     try:
-        # TODO: Possibly .pop()?
-        status = int(headers[':status'])
-    except KeyError:
+        status = int(headers.pop(':status'))
+    except (KeyError, ValueError):
         raise Http2Exception("Malformed HTTP2 response headers")
 
     return Response(
@@ -215,6 +215,33 @@ def make_response(headers, body, timestamp_start, timestamp_end):
         body,
         timestamp_start, timestamp_end
     )
+
+
+def assemble_request_headers(request):
+    headers = request.headers.copy()
+    if request.form_out == "relative":
+        # RFC 7540, 8.1.2.1:
+        # All pseudo-header fields MUST appear in the header block before regular header fields.
+        headers.pop(":method", None)
+        headers.pop(":scheme", None)
+        headers.pop(":path", None)
+        headers.fields = (
+            [
+                [b":method", request.method],
+                [b":scheme", request.scheme],
+                [b":path", request.path],
+            ] + headers.fields
+        )
+    else:
+        raise NotImplementedError()
+    return headers
+
+
+def assemble_response_headers(response):
+    headers = response.headers.copy()
+    headers.pop("status", None)
+    headers.fields.insert(0, [b":status", str(response.status_code).encode()])
+    return headers
 
 
 def read_nonmultiplexed_message(connection, unexpected_frame_callback=lambda _: None):
@@ -256,14 +283,3 @@ def read_nonmultiplexed_response(connection, unexpected_frame_callback=lambda _:
     response = make_response(headers, body, timestamp_start, timestamp_end)
     response.stream_id = stream_id
     return response
-
-
-def assemble_request_headers(request):
-    # TODO: We now have duplication between the pseudo-headers (:method, ...)
-    # and request.method. Ideally, we should unfiddle that here.
-    raise NotImplementedError()
-
-
-def assemble_response_headers(response):
-    # See assemble_request_headers
-    raise NotImplementedError()

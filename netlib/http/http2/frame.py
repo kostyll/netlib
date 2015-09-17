@@ -71,6 +71,9 @@ class Frame(object):
         self.flags = flags
         self.stream_id = stream_id
 
+    def __repr__(self):
+        return self.human_readable()
+
     @classmethod
     def _check_frame_size(cls, length, state):
         if state:
