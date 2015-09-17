@@ -136,9 +136,24 @@ class Frame(object):
     def human_readable(self, direction="-"):
         self.length = len(self.payload_bytes())
 
+        flags = []
+        if self.flags & Frame.FLAG_NO_FLAGS:
+            flags.append('NO_FLAGS')
+        if self.flags & Frame.FLAG_ACK:
+            flags.append('ACK')
+        if self.flags & Frame.FLAG_END_STREAM:
+            flags.append('END_STREAM')
+        if self.flags & Frame.FLAG_END_HEADERS:
+            flags.append('END_HEADERS')
+        if self.flags & Frame.FLAG_PADDED:
+            flags.append('PADDED')
+        if self.flags & Frame.FLAG_PRIORITY:
+            flags.append('PRIORITY')
+        flags = ' | '.join(flags or ['None'])
+
         return "\n".join([
-            "%s: %s | length: %d | flags: %#x | stream_id: %d" % (
-                direction, self.__class__.__name__, self.length, self.flags, self.stream_id),
+            "%s: %s | length: %d | flags: %s | stream_id: %d" % (
+                direction, self.__class__.__name__, self.length, flags, self.stream_id),
             self.payload_human_readable(),
             "===============================================================",
         ])
