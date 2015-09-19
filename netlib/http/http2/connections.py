@@ -4,14 +4,34 @@ import threading
 import time
 
 from hpack.hpack import Encoder, Decoder
+from hyperframe.frame import (
+    FRAME_MAX_LEN,
+    FRAME_MAX_ALLOWED_LEN,
+    Frame,
+    HeadersFrame,
+    ContinuationFrame,
+    DataFrame,
+    WindowUpdateFrame,
+    SettingsFrame,
+)
 
 from ...exceptions import Http2Exception
 from .. import Headers, Request, Response
-from .frame import (
-    Frame, WindowUpdateFrame, SettingsFrame, ContinuationFrame, HeadersFrame, DataFrame
-)
 
 CLIENT_CONNECTION_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+
+# TODO: remove once a new version is released
+# Polyfill for hyperframe <= 1.1.1
+# Taken from https://github.com/python-hyper/hyperframe/commit/51186d4840881950f014a8124e558ead67cd053b
+def __frame_repr__(self):
+    flags = ", ".join(self.flags) or "None"
+    body = self.serialize_body()
+    if len(body) > 100:
+        body = str(body[:100]) + "..."
+    return (
+        "{type}(Stream: {stream}; Flags: {flags}): {body}"
+    ).format(type=type(self).__name__, stream=self.stream_id, flags=flags, body=body)
+Frame.__repr__ = __frame_repr__
 
 
 class Http2Connection(object):
@@ -27,7 +47,14 @@ class Http2Connection(object):
 
     def read_frame(self):
         with self.lock:
-            return Frame.from_file(self.rfile)  # TODO: max_body_size
+            raw_header = self.rfile.safe_read(9)
+            if raw_header[:4] == b'HTTP':  # pragma no cover
+                raise HttpSyntaxException("Expected HTTP2 Frame, got HTTP/1 connection")
+            frame, length = Frame.parse_frame_header(raw_header)
+            payload = self.rfile.safe_read(length)
+            frame.parse_body(payload)
+            # TODO: max_body_size
+            return frame
 
     def send_frame(self, *frames):
         """
@@ -37,24 +64,24 @@ class Http2Connection(object):
         with self.lock:
             for frame in frames:
                 print("send frame", self.__class__.__name__, repr(frame))
-                d = frame.to_bytes()
+                d = frame.serialize()
                 self._connection.wfile.write(d)
                 self._connection.wfile.flush()
 
-    # FIXME: We should respect the actual connection settings
-    max_frame_size = 2 ** 14
 
     def send_headers(self, headers, stream_id, end_stream=False):
         with self.lock:
             if stream_id is None:
                 stream_id = self._next_stream_id()
             raw_headers = self.encoder.encode(headers.fields)
-            frames = _make_header_frames(raw_headers, stream_id, self.max_frame_size, end_stream)
+            # FIXME: We should respect the actual connection settings
+            frames = _make_header_frames(raw_headers, stream_id, FRAME_MAX_LEN, end_stream)
             self.send_frame(*frames)
             return stream_id
 
     def send_data(self, data, stream_id, end_stream=False):
-        frames = _make_data_frames(data, stream_id, self.max_frame_size, end_stream)
+        # FIXME: We should respect the actual connection settings
+        frames = _make_data_frames(data, stream_id, FRAME_MAX_LEN, end_stream)
         for frame in frames:
             self.send_frame(frame)
 
@@ -69,7 +96,7 @@ class Http2Connection(object):
 
     def _read_all_header_frames(self, headers_frame):
         frames = [headers_frame]
-        while not frames[-1].flags & Frame.FLAG_END_HEADERS:
+        while 'END_HEADERS' not in frames[-1].flags:
             # This blocks the whole connection if the client does not send header frames,
             # but that should not matter in practice.
             frame = self.read_frame()
@@ -105,15 +132,16 @@ class Http2ClientConnection(Http2Connection):
             raise Http2Exception("Invalid Client preface: %s" % actual_client_preface)
 
         # Send Settings Frame
-        settings_frame = SettingsFrame(settings={
-            SettingsFrame.SETTINGS.SETTINGS_MAX_CONCURRENT_STREAMS: 50,
-            SettingsFrame.SETTINGS.SETTINGS_INITIAL_WINDOW_SIZE: 2 ** 31 - 1  # yolo flow control
-        })
+        settings_frame = SettingsFrame(0)  # TODO: use new hyperframe initializer
+        settings_frame.settings = {
+            SettingsFrame.SETTINGS_MAX_CONCURRENT_STREAMS: 50,
+            SettingsFrame.SETTINGS_INITIAL_WINDOW_SIZE: 2 ** 31 - 1  # yolo flow control
+        }
         self.send_frame(settings_frame)
 
         # yolo flow control
-        window_update_frame = WindowUpdateFrame(stream_id=0,
-                                                window_size_increment=2 ** 31 - 2 ** 16)
+        window_update_frame = WindowUpdateFrame(0)  # TODO: use new hyperframe initializer
+        window_update_frame.window_increment = 2 ** 31 - 2 ** 16
         self.send_frame(window_update_frame)
 
     def _next_stream_id(self):
@@ -134,16 +162,17 @@ class Http2ServerConnection(Http2Connection):
         self._connection.wfile.flush()
 
         # Send Settings Frame
-        settings_frame = SettingsFrame(settings={
-            SettingsFrame.SETTINGS.SETTINGS_ENABLE_PUSH: 0,
-            SettingsFrame.SETTINGS.SETTINGS_MAX_CONCURRENT_STREAMS: 50,
-            SettingsFrame.SETTINGS.SETTINGS_INITIAL_WINDOW_SIZE: 2 ** 31 - 1  # yolo flow control
-        })
+        settings_frame = SettingsFrame(0)  # TODO: use new hyperframe initializer
+        settings_frame.settings = {
+            SettingsFrame.SETTINGS_ENABLE_PUSH: 0,
+            SettingsFrame.SETTINGS_MAX_CONCURRENT_STREAMS: 50,
+            SettingsFrame.SETTINGS_INITIAL_WINDOW_SIZE: 2 ** 31 - 1  # yolo flow control
+        }
         self.send_frame(settings_frame)
 
         # yolo flow control
-        window_update_frame = WindowUpdateFrame(stream_id=0,
-                                                window_size_increment=2 ** 31 - 2 ** 16)
+        window_update_frame = WindowUpdateFrame(0)  # TODO: use new hyperframe initializer
+        window_update_frame.window_increment = 2 ** 31 - 2 ** 16
         self.send_frame(window_update_frame)
 
     def _next_stream_id(self):
@@ -158,12 +187,12 @@ def _make_header_frames(raw_headers, stream_id, max_frame_size, end_stream):
     # `split_into_frames` method if they would have a common way of setting the data/content.
     frames = []
     for i in range(0, len(raw_headers), max_frame_size):
-        frame = next(frame_cls)(stream_id=stream_id)
-        frame.header_block_fragment = raw_headers[i:i + max_frame_size]
+        frame = next(frame_cls)(stream_id)
+        frame.data = raw_headers[i:i + max_frame_size]
         frames.append(frame)
-    frames[-1].flags = Frame.FLAG_END_HEADERS
+    frames[-1].flags.add('FLAG_END_HEADERS')
     if end_stream:
-        frames[-1].flags |= Frame.FLAG_END_STREAM
+        frames[-1].flags.add('FLAG_END_STREAM')
     return frames
 
 
@@ -171,11 +200,11 @@ def _make_data_frames(data, stream_id, max_frame_size, end_stream):
     frames = []
     frame_offsets = range(0, len(data), max_frame_size) or [0]
     for i in frame_offsets:
-        frame = DataFrame(stream_id=stream_id)
-        frame.payload = data[i:i + max_frame_size]
+        frame = DataFrame(stream_id)
+        frame.data = data[i:i + max_frame_size]
         frames.append(frame)
     if end_stream:
-        frames[-1].flags |= Frame.FLAG_END_STREAM
+        frames[-1].flags.add('FLAG_END_STREAM')
     return frames
 
 
@@ -239,7 +268,7 @@ def assemble_request_headers(request):
 
 def assemble_response_headers(response):
     headers = response.headers.copy()
-    headers.pop("status", None)
+    headers.pop(b":status", None)
     headers.fields.insert(0, [b":status", str(response.status_code).encode()])
     return headers
 
@@ -254,12 +283,12 @@ def read_nonmultiplexed_message(connection, unexpected_frame_callback=lambda _: 
     all_header_frames, headers = connection.read_headers(headers_frame)
     body = b""
 
-    if not all_header_frames[-1].flags & Frame.FLAG_END_STREAM:
+    if 'FLAG_END_STREAM' not in all_header_frames[-1].flags:
         while True:
             f = connection.read_frame()
             if isinstance(f, DataFrame) and f.stream_id == headers_frame.stream_id:
-                body += f.payload
-                if f.flags & Frame.FLAG_END_STREAM:
+                body += f.data
+                if 'FLAG_END_STREAM' in f.flags:
                     break
             else:
                 unexpected_frame_callback(f)
