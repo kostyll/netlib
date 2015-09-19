@@ -190,9 +190,9 @@ def _make_header_frames(raw_headers, stream_id, max_frame_size, end_stream):
         frame = next(frame_cls)(stream_id)
         frame.data = raw_headers[i:i + max_frame_size]
         frames.append(frame)
-    frames[-1].flags.add('FLAG_END_HEADERS')
+    frames[-1].flags.add('END_HEADERS')
     if end_stream:
-        frames[-1].flags.add('FLAG_END_STREAM')
+        frames[-1].flags.add('END_STREAM')
     return frames
 
 
@@ -204,7 +204,7 @@ def _make_data_frames(data, stream_id, max_frame_size, end_stream):
         frame.data = data[i:i + max_frame_size]
         frames.append(frame)
     if end_stream:
-        frames[-1].flags.add('FLAG_END_STREAM')
+        frames[-1].flags.add('END_STREAM')
     return frames
 
 
@@ -283,12 +283,12 @@ def read_nonmultiplexed_message(connection, unexpected_frame_callback=lambda _: 
     all_header_frames, headers = connection.read_headers(headers_frame)
     body = b""
 
-    if 'FLAG_END_STREAM' not in all_header_frames[-1].flags:
+    if 'END_STREAM' not in all_header_frames[-1].flags:
         while True:
             f = connection.read_frame()
             if isinstance(f, DataFrame) and f.stream_id == headers_frame.stream_id:
                 body += f.data
-                if 'FLAG_END_STREAM' in f.flags:
+                if 'END_STREAM' in f.flags:
                     break
             else:
                 unexpected_frame_callback(f)
