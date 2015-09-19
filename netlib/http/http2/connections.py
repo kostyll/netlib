@@ -52,7 +52,7 @@ class Http2Connection(object):
                 raise HttpSyntaxException("Expected HTTP2 Frame, got HTTP/1 connection")
             frame, length = Frame.parse_frame_header(raw_header)
             payload = self.rfile.safe_read(length)
-            frame.parse_body(payload)
+            frame.parse_body(memoryview(payload))
             # TODO: max_body_size
             return frame
 
@@ -87,8 +87,8 @@ class Http2Connection(object):
 
     def read_headers(self, headers_frame):
         all_header_frames = self._read_all_header_frames(headers_frame)
-        header_block_fragment = b"".join(frame.header_block_fragment for frame in all_header_frames)
-        decoded = self.decoder.decode(header_block_fragment)
+        raw_headers = b"".join(frame.data for frame in all_header_frames)
+        decoded = self.decoder.decode(raw_headers)
         headers = Headers(
             [[str(k).encode(), str(v).encode()] for k, v in decoded]
         )
@@ -190,9 +190,9 @@ def _make_header_frames(raw_headers, stream_id, max_frame_size, end_stream):
         frame = next(frame_cls)(stream_id)
         frame.data = raw_headers[i:i + max_frame_size]
         frames.append(frame)
-    frames[-1].flags.add('FLAG_END_HEADERS')
+    frames[-1].flags.add('END_HEADERS')
     if end_stream:
-        frames[-1].flags.add('FLAG_END_STREAM')
+        frames[-1].flags.add('END_STREAM')
     return frames
 
 
@@ -204,7 +204,7 @@ def _make_data_frames(data, stream_id, max_frame_size, end_stream):
         frame.data = data[i:i + max_frame_size]
         frames.append(frame)
     if end_stream:
-        frames[-1].flags.add('FLAG_END_STREAM')
+        frames[-1].flags.add('END_STREAM')
     return frames
 
 
@@ -283,12 +283,12 @@ def read_nonmultiplexed_message(connection, unexpected_frame_callback=lambda _: 
     all_header_frames, headers = connection.read_headers(headers_frame)
     body = b""
 
-    if 'FLAG_END_STREAM' not in all_header_frames[-1].flags:
+    if 'END_STREAM' not in all_header_frames[-1].flags:
         while True:
             f = connection.read_frame()
             if isinstance(f, DataFrame) and f.stream_id == headers_frame.stream_id:
                 body += f.data
-                if 'FLAG_END_STREAM' in f.flags:
+                if 'END_STREAM' in f.flags:
                     break
             else:
                 unexpected_frame_callback(f)
