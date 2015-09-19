@@ -4,6 +4,7 @@ import ssl
 import time
 import datetime
 import itertools
+import ipaddress
 from pyasn1.type import univ, constraint, char, namedtype, tag
 from pyasn1.codec.der.decoder import decode
 from pyasn1.error import PyAsn1Error
@@ -11,7 +12,7 @@ import OpenSSL
 
 DEFAULT_EXP = 157680000  # = 24 * 60 * 60 * 365 * 5
 # Generated with "openssl dhparam". It's too slow to generate this on startup.
-DEFAULT_DHPARAM = """
+DEFAULT_DHPARAM = b"""
 -----BEGIN DH PARAMETERS-----
 MIICCAKCAgEAyT6LzpwVFS3gryIo29J5icvgxCnCebcdSe/NHMkD8dKJf8suFCg3
 O2+dguLakSVif/t6dhImxInJk230HmfC8q93hdcg/j8rLGJYDKu3ik6H//BAHKIv
@@ -42,29 +43,29 @@ def create_ca(o, cn, exp):
     cert.set_pubkey(key)
     cert.add_extensions([
         OpenSSL.crypto.X509Extension(
-            "basicConstraints",
+            b"basicConstraints",
             True,
-            "CA:TRUE"
+            b"CA:TRUE"
         ),
         OpenSSL.crypto.X509Extension(
-            "nsCertType",
+            b"nsCertType",
             False,
-            "sslCA"
+            b"sslCA"
         ),
         OpenSSL.crypto.X509Extension(
-            "extendedKeyUsage",
+            b"extendedKeyUsage",
             False,
-            "serverAuth,clientAuth,emailProtection,timeStamping,msCodeInd,msCodeCom,msCTLSign,msSGC,msEFS,nsSGC"
+            b"serverAuth,clientAuth,emailProtection,timeStamping,msCodeInd,msCodeCom,msCTLSign,msSGC,msEFS,nsSGC"
         ),
         OpenSSL.crypto.X509Extension(
-            "keyUsage",
+            b"keyUsage",
             True,
-            "keyCertSign, cRLSign"
+            b"keyCertSign, cRLSign"
         ),
         OpenSSL.crypto.X509Extension(
-            "subjectKeyIdentifier",
+            b"subjectKeyIdentifier",
             False,
-            "hash",
+            b"hash",
             subject=cert
         ),
     ])
@@ -85,8 +86,13 @@ def dummy_cert(privkey, cacert, commonname, sans):
     """
     ss = []
     for i in sans:
-        ss.append("DNS: %s" % i)
-    ss = ", ".join(ss)
+        try:
+            ipaddress.ip_address(i.decode("ascii"))
+        except ValueError:
+            ss.append(b"DNS: %s" % i)
+        else:
+            ss.append(b"IP: %s" % i)
+    ss = b", ".join(ss)
 
     cert = OpenSSL.crypto.X509()
     cert.gmtime_adj_notBefore(-3600 * 48)
@@ -97,7 +103,7 @@ def dummy_cert(privkey, cacert, commonname, sans):
     if ss:
         cert.set_version(2)
         cert.add_extensions(
-            [OpenSSL.crypto.X509Extension("subjectAltName", False, ss)])
+            [OpenSSL.crypto.X509Extension(b"subjectAltName", False, ss)])
     cert.set_pubkey(cacert.get_pubkey())
     cert.sign(privkey, "sha256")
     return SSLCert(cert)
@@ -285,14 +291,14 @@ class CertStore(object):
 
     @staticmethod
     def asterisk_forms(dn):
-        parts = dn.split(".")
+        parts = dn.split(b".")
         parts.reverse()
-        curr_dn = ""
-        dn_forms = ["*"]
+        curr_dn = b""
+        dn_forms = [b"*"]
         for part in parts[:-1]:
-            curr_dn = "." + part + curr_dn  # .example.com
-            dn_forms.append("*" + curr_dn)   # *.example.com
-        if parts[-1] != "*":
+            curr_dn = b"." + part + curr_dn  # .example.com
+            dn_forms.append(b"*" + curr_dn)   # *.example.com
+        if parts[-1] != b"*":
             dn_forms.append(parts[-1] + curr_dn)
         return dn_forms
 
@@ -335,6 +341,7 @@ class CertStore(object):
 class _GeneralName(univ.Choice):
     # We are only interested in dNSNames. We use a default handler to ignore
     # other types.
+    # TODO: We should also handle iPAddresses.
     componentType = namedtype.NamedTypes(
         namedtype.NamedType('dNSName', char.IA5String().subtype(
             implicitTag=tag.Tag(tag.tagClassContext, tag.tagFormatSimple, 2)
@@ -423,7 +430,7 @@ class SSLCert(object):
     def cn(self):
         c = None
         for i in self.subject:
-            if i[0] == "CN":
+            if i[0] == b"CN":
                 c = i[1]
         return c
 
@@ -432,7 +439,7 @@ class SSLCert(object):
         altnames = []
         for i in range(self.x509.get_extension_count()):
             ext = self.x509.get_extension(i)
-            if ext.get_short_name() == "subjectAltName":
+            if ext.get_short_name() == b"subjectAltName":
                 try:
                     dec = decode(ext.get_data(), asn1Spec=_GeneralNames())
                 except PyAsn1Error:
