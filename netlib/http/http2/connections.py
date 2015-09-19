@@ -87,8 +87,8 @@ class Http2Connection(object):
 
     def read_headers(self, headers_frame):
         all_header_frames = self._read_all_header_frames(headers_frame)
-        header_block_fragment = b"".join(frame.header_block_fragment for frame in all_header_frames)
-        decoded = self.decoder.decode(header_block_fragment)
+        raw_headers = b"".join(frame.data for frame in all_header_frames)
+        decoded = self.decoder.decode(raw_headers)
         headers = Headers(
             [[str(k).encode(), str(v).encode()] for k, v in decoded]
         )
