@@ -134,8 +134,8 @@ class Http2ClientConnection(Http2Connection):
         # Send Settings Frame
         settings_frame = SettingsFrame(0)  # TODO: use new hyperframe initializer
         settings_frame.settings = {
-            SettingsFrame.SETTINGS_MAX_CONCURRENT_STREAMS: 50,
-            SettingsFrame.SETTINGS_INITIAL_WINDOW_SIZE: 2 ** 31 - 1  # yolo flow control
+            SettingsFrame.MAX_CONCURRENT_STREAMS: 50,
+            SettingsFrame.INITIAL_WINDOW_SIZE: 2 ** 31 - 1  # yolo flow control
         }
         self.send_frame(settings_frame)
 
@@ -164,9 +164,9 @@ class Http2ServerConnection(Http2Connection):
         # Send Settings Frame
         settings_frame = SettingsFrame(0)  # TODO: use new hyperframe initializer
         settings_frame.settings = {
-            SettingsFrame.SETTINGS_ENABLE_PUSH: 0,
-            SettingsFrame.SETTINGS_MAX_CONCURRENT_STREAMS: 50,
-            SettingsFrame.SETTINGS_INITIAL_WINDOW_SIZE: 2 ** 31 - 1  # yolo flow control
+            SettingsFrame.ENABLE_PUSH: 0,
+            SettingsFrame.MAX_CONCURRENT_STREAMS: 50,
+            SettingsFrame.INITIAL_WINDOW_SIZE: 2 ** 31 - 1  # yolo flow control
         }
         self.send_frame(settings_frame)
 
