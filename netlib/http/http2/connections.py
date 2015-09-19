@@ -52,7 +52,7 @@ class Http2Connection(object):
                 raise HttpSyntaxException("Expected HTTP2 Frame, got HTTP/1 connection")
             frame, length = Frame.parse_frame_header(raw_header)
             payload = self.rfile.safe_read(length)
-            frame.parse_body(payload)
+            frame.parse_body(memoryview(payload))
             # TODO: max_body_size
             return frame
 
