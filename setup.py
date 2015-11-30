@@ -26,6 +26,7 @@ deps = {
 }
 if sys.version_info < (3, 0):
     deps.add("ipaddress~=1.0.15")
+    deps = set(map(lambda x: x.replace('~', '>'), deps))
 
 setup(
     name="netlib",
